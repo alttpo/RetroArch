@@ -291,6 +291,54 @@ bool state_manager_frame_is_reversed(void)
 }
 #endif
 
+static size_t mmap_add_bits_down(size_t n)
+{
+  n |= n >>  1;
+  n |= n >>  2;
+  n |= n >>  4;
+  n |= n >>  8;
+  n |= n >> 16;
+
+  /* double shift to avoid warnings on 32bit (it's dead code,
+   * but compilers suck) */
+  if (sizeof(size_t) > 4)
+    n |= n >> 16 >> 16;
+
+  return n;
+}
+
+static size_t mmap_inflate(size_t addr, size_t mask)
+{
+  while (mask)
+  {
+    size_t tmp = (mask - 1) & ~mask;
+
+    /* to put in an 1 bit instead, OR in tmp+1 */
+    addr       = ((addr & ~tmp) << 1) | (addr & tmp);
+    mask       = mask & (mask - 1);
+  }
+
+  return addr;
+}
+
+static size_t mmap_reduce(size_t addr, size_t mask)
+{
+  while (mask)
+  {
+    size_t tmp = (mask - 1) & ~mask;
+    addr       = (addr & tmp) | ((addr >> 1) & ~tmp);
+    mask       = (mask & (mask - 1)) >> 1;
+  }
+
+  return addr;
+}
+
+static size_t mmap_highest_bit(size_t n)
+{
+  n = mmap_add_bits_down(n);
+  return n ^ (n >> 1);
+}
+
 gfx_animation_t *anim_get_ptr(void)
 {
    struct rarch_state   *p_rarch  = &rarch_st;
@@ -10062,6 +10110,107 @@ static bool command_write_ram(const char *arg)
 }
 #endif
 
+static bool command_core_mem_read(const char *arg)
+{
+   unsigned i;
+   char space[9];
+   char *reply                  = NULL;
+   const uint8_t  *data         = NULL;
+   char *reply_at               = NULL;
+   unsigned int nbytes          = 0;
+   unsigned int alloc_size      = 0;
+   unsigned int addr            = -1;
+   unsigned int len             = 0;
+   struct rarch_state  *p_rarch = &rarch_st;
+   rarch_system_info_t  *system = NULL;
+
+   const rarch_memory_descriptor_t *desc;
+   const rarch_memory_descriptor_t *end;
+
+   if (sscanf(arg, "%8s %x %x", space, &addr, &nbytes) != 3)
+      return true;
+
+   /* We allocate more than needed, saving 20 bytes is not really relevant */
+   alloc_size              = 40 + nbytes * 3;
+   reply                   = (char*)malloc(alloc_size);
+   reply[0]                = '\0';
+   reply_at                = reply + snprintf(
+         reply, alloc_size - 1, "CORE_MEM_READ" " %s %x", space, addr);
+
+   system = runloop_get_system_info();
+   RARCH_LOG("[CORE_MEM_READ] num_descriptors = %d\n", system->mmaps.num_descriptors);
+   if (system->mmaps.num_descriptors == 0)
+   {
+      goto error;
+   }
+
+   desc = system->mmaps.descriptors;
+   end  = desc + system->mmaps.num_descriptors;
+
+   for (; desc < end; desc++)
+   {
+      RARCH_LOG("[CORE_MEM_READ] (start=%08x len=%08x select=%08x mask=%08x ptr=%p offs=%08x)\n",
+                desc->core.start, desc->core.len, desc->core.select, desc->core.disconnect, desc->core.ptr, desc->core.offset);
+
+      if (desc->core.select == 0)
+      {
+         /* if select is 0, attempt to explcitly match the address */
+         if (addr >= desc->core.start && addr < desc->core.start + desc->core.len)
+         {
+            data = (uint8_t*)desc->core.ptr + desc->core.offset + addr - desc->core.start;
+            break;
+         }
+      }
+      else
+      {
+         /* otherwise, attempt to match the address by matching the select bits */
+         if (((desc->core.start ^ addr) & desc->core.select) == 0)
+         {
+            unsigned int tmp = (addr - desc->core.start);
+            RARCH_LOG("[CORE_MEM_READ] hit!     addr=%08x\n", tmp);
+
+            tmp = mmap_reduce(tmp, desc->core.disconnect);
+            RARCH_LOG("[CORE_MEM_READ] reduced  addr=%08x\n", tmp);
+
+            while (tmp > desc->core.len && tmp > 0)
+            {
+               tmp &= ~mmap_highest_bit(tmp);
+            }
+
+            RARCH_LOG("[CORE_MEM_READ] physical addr=%08x\n", tmp);
+            data = (uint8_t*)desc->core.ptr + desc->core.offset + tmp;
+            break;
+         }
+      }
+   }
+
+   if (desc == end)
+      goto error;
+
+   if (data == NULL)
+      goto error;
+
+   for (i = 0; i < nbytes; i++)
+      snprintf(reply_at + 3 * i, 4, " %.2X", data[i]);
+   reply_at[3 * nbytes] = '\n';
+   len                  = reply_at + 3 * nbytes + 1 - reply;
+
+   goto final;
+
+error:
+   strlcpy(reply_at, " -1\n", sizeof(reply) - strlen(reply));
+   len                  = reply_at + STRLEN_CONST(" -1\n") - reply;
+
+final:
+   command_reply(p_rarch, reply, len);
+   free(reply);
+   return true;
+}
+
+static bool command_core_mem_write(const char *arg) {
+   return true;
+}
+
 #ifdef HAVE_NETWORK_CMD
 static bool command_get_arg(const char *tok,
       const char **arg, unsigned *index)
@@ -16176,54 +16325,6 @@ static void core_performance_counter_stop(struct retro_perf_counter *perf)
 
    if (runloop_perfcnt_enable)
       perf->total += cpu_features_get_perf_counter() - perf->start;
-}
-
-static size_t mmap_add_bits_down(size_t n)
-{
-   n |= n >>  1;
-   n |= n >>  2;
-   n |= n >>  4;
-   n |= n >>  8;
-   n |= n >> 16;
-
-   /* double shift to avoid warnings on 32bit (it's dead code,
-    * but compilers suck) */
-   if (sizeof(size_t) > 4)
-      n |= n >> 16 >> 16;
-
-   return n;
-}
-
-static size_t mmap_inflate(size_t addr, size_t mask)
-{
-    while (mask)
-   {
-      size_t tmp = (mask - 1) & ~mask;
-
-      /* to put in an 1 bit instead, OR in tmp+1 */
-      addr       = ((addr & ~tmp) << 1) | (addr & tmp);
-      mask       = mask & (mask - 1);
-   }
-
-   return addr;
-}
-
-static size_t mmap_reduce(size_t addr, size_t mask)
-{
-   while (mask)
-   {
-      size_t tmp = (mask - 1) & ~mask;
-      addr       = (addr & tmp) | ((addr >> 1) & ~tmp);
-      mask       = (mask & (mask - 1)) >> 1;
-   }
-
-   return addr;
-}
-
-static size_t mmap_highest_bit(size_t n)
-{
-   n = mmap_add_bits_down(n);
-   return n ^ (n >> 1);
 }
 
 

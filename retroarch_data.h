@@ -2666,6 +2666,8 @@ static bool command_show_osd_msg(const char* arg);
 static bool command_read_ram(const char *arg);
 static bool command_write_ram(const char *arg);
 #endif
+static bool command_core_mem_read(const char *arg);
+static bool command_core_mem_write(const char *arg);
 
 static const struct cmd_action_map action_map[] = {
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
@@ -2679,6 +2681,8 @@ static const struct cmd_action_map action_map[] = {
    { "READ_CORE_RAM",   command_read_ram,    "<address> <number of bytes>" },
    { "WRITE_CORE_RAM",  command_write_ram,   "<address> <byte1> <byte2> ..." },
 #endif
+   { "CORE_MEM_READ",   command_core_mem_read,  "<space> <address> <number of bytes>" },
+   { "CORE_MEM_WRITE",  command_core_mem_write, "<space> <address> <byte1> <byte2> ..." },
 };
 
 static const struct cmd_map map[] = {
