@@ -10113,9 +10113,10 @@ static bool command_write_ram(const char *arg)
 static bool command_core_mem_read(const char *arg)
 {
    unsigned i;
-   char space[9];
+   int err = -1;
    char *reply                  = NULL;
    const uint8_t  *data         = NULL;
+   size_t offs = 0;
    char *reply_at               = NULL;
    unsigned int nbytes          = 0;
    unsigned int alloc_size      = 0;
@@ -10127,20 +10128,36 @@ static bool command_core_mem_read(const char *arg)
    const rarch_memory_descriptor_t *desc;
    const rarch_memory_descriptor_t *end;
 
-   if (sscanf(arg, "%8s %x %x", space, &addr, &nbytes) != 3)
+   if (sscanf(arg, "%x %x", &addr, &nbytes) != 2)
+   {
+      RARCH_WARN("[CORE_MEM_READ] failed to parse command\n");
       return true;
+   }
+
+   /* UDP packets must fit into common MTU sizes minus IP+UDP packet header size.
+    * 1024 hex chars should fit comfortably in a common 1500 MTU network. */
+   if (nbytes > 512)
+   {
+      RARCH_WARN("[CORE_MEM_READ] size must be at most 512 bytes\n");
+      err = -2;
+      goto error;
+   }
+
+   if (nbytes == 0)
+      nbytes = 512;
 
    /* We allocate more than needed, saving 20 bytes is not really relevant */
-   alloc_size              = 40 + nbytes * 3;
-   reply                   = (char*)malloc(alloc_size);
-   reply[0]                = '\0';
-   reply_at                = reply + snprintf(
-         reply, alloc_size - 1, "CORE_MEM_READ" " %s %x", space, addr);
+   alloc_size = 40 + nbytes * 2;
+   reply      = (char*)malloc(alloc_size);
+   reply[0]   = '\0';
+   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_READ" " %x", addr);
 
    system = runloop_get_system_info();
-   RARCH_LOG("[CORE_MEM_READ] num_descriptors = %d\n", system->mmaps.num_descriptors);
+   /*RARCH_LOG("[CORE_MEM_READ] num_descriptors = %d\n", system->mmaps.num_descriptors);*/
    if (system->mmaps.num_descriptors == 0)
    {
+      RARCH_WARN("[CORE_MEM_READ] no memory map descriptors found\n");
+      err = -1;
       goto error;
    }
 
@@ -10149,15 +10166,16 @@ static bool command_core_mem_read(const char *arg)
 
    for (; desc < end; desc++)
    {
-      RARCH_LOG("[CORE_MEM_READ] (start=%08x len=%08x select=%08x mask=%08x ptr=%p offs=%08x)\n",
-                desc->core.start, desc->core.len, desc->core.select, desc->core.disconnect, desc->core.ptr, desc->core.offset);
+      /*RARCH_LOG("[CORE_MEM_READ] (start=%08x len=%08x select=%08x mask=%08x ptr=%p offs=%08x)\n",
+                desc->core.start, desc->core.len, desc->core.select, desc->core.disconnect, desc->core.ptr, desc->core.offset);*/
 
       if (desc->core.select == 0)
       {
          /* if select is 0, attempt to explcitly match the address */
          if (addr >= desc->core.start && addr < desc->core.start + desc->core.len)
          {
-            data = (uint8_t*)desc->core.ptr + desc->core.offset + addr - desc->core.start;
+            data = (uint8_t*)desc->core.ptr + desc->core.offset;
+            offs = addr - desc->core.start;
             break;
          }
       }
@@ -10166,42 +10184,51 @@ static bool command_core_mem_read(const char *arg)
          /* otherwise, attempt to match the address by matching the select bits */
          if (((desc->core.start ^ addr) & desc->core.select) == 0)
          {
-            unsigned int tmp = (addr - desc->core.start);
-            RARCH_LOG("[CORE_MEM_READ] hit!     addr=%08x\n", tmp);
-
-            tmp = mmap_reduce(tmp, desc->core.disconnect);
-            RARCH_LOG("[CORE_MEM_READ] reduced  addr=%08x\n", tmp);
-
-            while (tmp > desc->core.len && tmp > 0)
-            {
-               tmp &= ~mmap_highest_bit(tmp);
-            }
-
-            RARCH_LOG("[CORE_MEM_READ] physical addr=%08x\n", tmp);
-            data = (uint8_t*)desc->core.ptr + desc->core.offset + tmp;
+            offs = (addr - desc->core.start);
+            offs = mmap_reduce(offs, desc->core.disconnect);
+            data = (uint8_t*)desc->core.ptr + desc->core.offset;
             break;
          }
       }
    }
 
    if (desc == end)
+   {
+      RARCH_WARN("[CORE_MEM_READ] address %08x did not match any memory map descriptors\n", addr);
+      err = -3;
       goto error;
+   }
 
    if (data == NULL)
+   {
+      RARCH_WARN("[CORE_MEM_READ] address %08x matched a descriptor but pointer was NULL\n", addr);
+      err = -4;
       goto error;
+   }
 
-   for (i = 0; i < nbytes; i++)
-      snprintf(reply_at + 3 * i, 4, " %.2X", data[i]);
-   reply_at[3 * nbytes] = '\n';
-   len                  = reply_at + 3 * nbytes + 1 - reply;
+   reply_at += snprintf(reply_at, 6, " %3d ", nbytes);
+
+   for (i = 0; i < nbytes; i++, offs++)
+   {
+      while (offs >= desc->core.len)
+      {
+         offs &= ~mmap_highest_bit(offs);
+      }
+
+      reply_at += snprintf(reply_at, 3, "%.2X", data[offs]);
+   }
+   *reply_at++ = '\n';
+   *reply_at++ = 0;
+   len = reply_at - reply;
 
    goto final;
 
 error:
-   strlcpy(reply_at, " -1\n", sizeof(reply) - strlen(reply));
-   len                  = reply_at + STRLEN_CONST(" -1\n") - reply;
+   reply_at += snprintf(reply_at, 5, " %d\n", err);
+   len = reply_at - reply;
 
 final:
+   /*RARCH_LOG("[CORE_MEM_READ] len=%d of %d; strlen=%d\n", len, alloc_size, strlen(reply));*/
    command_reply(p_rarch, reply, len);
    free(reply);
    return true;
