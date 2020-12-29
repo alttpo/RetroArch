@@ -10198,11 +10198,23 @@ static bool command_core_mem_read(const char *arg)
 
    const rarch_memory_descriptor_t *desc = NULL;
 
-   if (sscanf(arg, "%x %x", &addr, &nbytes) != 2)
+   const char *t = arg;
+
+   addr = strtoul(t, (char**)&t, 16);
+   if (t == arg)
    {
       RARCH_WARN("[CORE_MEM_READ] failed to parse command\n");
       return true;
    }
+   arg = t;
+
+   nbytes = strtoul(t, (char**)&t, 16);
+   if (t == arg)
+   {
+      RARCH_WARN("[CORE_MEM_READ] failed to parse command\n");
+      return true;
+   }
+   arg = t;
 
    /* UDP packets must fit into common MTU sizes minus IP+UDP packet header size.
     * 1024 hex chars should fit comfortably in a common 1500 MTU network. */
@@ -10220,7 +10232,7 @@ static bool command_core_mem_read(const char *arg)
    alloc_size = 40 + nbytes * 2;
    reply      = (char*)malloc(alloc_size);
    reply[0]   = '\0';
-   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_READ" " %x", addr);
+   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_READ" " %x %3x ", addr, nbytes);
 
    /* find the mapped memory by address: */
    err = core_mem_find(
@@ -10250,8 +10262,6 @@ static bool command_core_mem_read(const char *arg)
       goto error;
    }
 
-   reply_at += snprintf(reply_at, 6, " %3d ", nbytes);
-
    /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
     * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
    for (i = 0; i < nbytes; i++, offs++)
@@ -10263,6 +10273,7 @@ static bool command_core_mem_read(const char *arg)
 
       reply_at += snprintf(reply_at, 3, "%.2X", data[offs]);
    }
+
    *reply_at++ = '\n';
    *reply_at++ = 0;
    len = reply_at - reply;
@@ -10280,7 +10291,113 @@ final:
    return true;
 }
 
-static bool command_core_mem_write(const char *arg) {
+static bool command_core_mem_write(const char *arg)
+{
+   unsigned i;
+   int err = -1;
+   char *reply                  = NULL;
+   char *reply_at               = NULL;
+   unsigned int nbytes          = 0;
+   unsigned int alloc_size      = 0;
+   unsigned int addr            = -1;
+   unsigned int len             = 0;
+
+   struct rarch_state  *p_rarch = &rarch_st;
+   uint8_t *data = NULL;
+   size_t   offs = 0;
+
+   const rarch_memory_descriptor_t *desc = NULL;
+
+   const char *t = arg;
+
+   addr = strtoul(t, (char**)&t, 16);
+   if (t == arg)
+   {
+      RARCH_WARN("[CORE_MEM_READ] failed to parse command\n");
+      return true;
+   }
+   arg = t;
+
+   nbytes = strtoul(t, (char**)&t, 16);
+   if (t == arg)
+   {
+      RARCH_WARN("[CORE_MEM_READ] failed to parse command\n");
+      return true;
+   }
+   arg = t;
+
+   /* UDP packets must fit into common MTU sizes minus IP+UDP packet header size.
+    * 1024 hex chars should fit comfortably in a common 1500 MTU network. */
+   if (nbytes > 512)
+   {
+      RARCH_WARN("[CORE_MEM_WRITE] size must be at most 512 bytes\n");
+      err = -2;
+      goto error;
+   }
+
+   if (nbytes == 0)
+      nbytes = 512;
+
+   /* We allocate more than needed, saving 20 bytes is not really relevant */
+   alloc_size = 40 + nbytes * 2;
+   reply      = (char*)malloc(alloc_size);
+   reply[0]   = '\0';
+   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_WRITE" " %x %3x", addr, nbytes);
+
+   /* find the mapped memory by address: */
+   err = core_mem_find(
+      /* input */
+      addr,
+      /* output */
+      &desc,
+      &data,
+      &offs
+   );
+
+   if (err == -1)
+   {
+      RARCH_WARN("[CORE_MEM_WRITE] no memory map descriptors found\n");
+      goto error;
+   }
+
+   if (err == -3)
+   {
+      RARCH_WARN("[CORE_MEM_WRITE] address %08x did not match any memory map descriptors\n", addr);
+      goto error;
+   }
+
+   if (err == -4)
+   {
+      RARCH_WARN("[CORE_MEM_WRITE] address %08x matched a descriptor but pointer was NULL\n", addr);
+      goto error;
+   }
+
+   /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
+    * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
+   for (i = 0; i < nbytes; i++, offs++, t += 2)
+   {
+      unsigned int b;
+
+      while (offs >= desc->core.len)
+      {
+         offs &= ~mmap_highest_bit(offs);
+      }
+
+      sscanf(t, "%02x", &b);
+
+      data[offs] = b;
+   }
+
+   err = 0;
+
+error:
+   reply_at += snprintf(reply_at, 5, " %d\n", err);
+   len = reply_at - reply;
+
+final:
+   /*RARCH_LOG("[CORE_MEM_WRITE] len=%d of %d; strlen=%d\n", len, alloc_size, strlen(reply));*/
+   command_reply(p_rarch, reply, len);
+   free(reply);
    return true;
 }
 
