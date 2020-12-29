@@ -10294,7 +10294,7 @@ final:
 static bool command_core_mem_write(const char *arg)
 {
    unsigned i;
-   int err = -1;
+   int err = 0;
    char *reply                  = NULL;
    char *reply_at               = NULL;
    unsigned int nbytes          = 0;
@@ -10326,23 +10326,24 @@ static bool command_core_mem_write(const char *arg)
    }
    arg = t;
 
+   alloc_size = 40;
+   reply      = (char*)malloc(alloc_size);
+   reply[0]   = '\0';
+   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_WRITE" " %x", addr);
+
    /* UDP packets must fit into common MTU sizes minus IP+UDP packet header size.
     * 1024 hex chars should fit comfortably in a common 1500 MTU network. */
    if (nbytes > 512)
    {
+      nbytes = 512;
       RARCH_WARN("[CORE_MEM_WRITE] size must be at most 512 bytes\n");
       err = -2;
-      goto error;
    }
 
-   if (nbytes == 0)
-      nbytes = 512;
+   reply_at += snprintf(reply_at, 5, " %3x", nbytes);
 
-   /* We allocate more than needed, saving 20 bytes is not really relevant */
-   alloc_size = 40 + nbytes * 2;
-   reply      = (char*)malloc(alloc_size);
-   reply[0]   = '\0';
-   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_WRITE" " %x %3x", addr, nbytes);
+   if (err != 0)
+      goto error;
 
    /* find the mapped memory by address: */
    err = core_mem_find(
@@ -10382,6 +10383,9 @@ static bool command_core_mem_write(const char *arg)
       {
          offs &= ~mmap_highest_bit(offs);
       }
+
+      if (*t == 0)
+         break;
 
       sscanf(t, "%02x", &b);
 
