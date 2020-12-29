@@ -10284,7 +10284,6 @@ static bool command_core_mem_read(const char *arg)
    }
 
    *reply_at++ = '\n';
-   *reply_at++ = 0;
    len = reply_at - reply;
 
    /*RARCH_LOG("[CORE_MEM_READ] len=%d of %d; strlen=%d\n", len, alloc_size, strlen(reply));*/
@@ -10303,6 +10302,7 @@ static bool command_core_mem_write(const char *arg)
    unsigned int alloc_size      = 0;
    unsigned int addr            = -1;
    unsigned int len             = 0;
+   uint8_t bytes[512];
 
    struct rarch_state  *p_rarch = &rarch_st;
    uint8_t *data = NULL;
@@ -10328,79 +10328,81 @@ static bool command_core_mem_write(const char *arg)
    }
    arg = t;
 
-   alloc_size = 40;
-   reply      = (char*)malloc(alloc_size);
-   reply[0]   = '\0';
-   reply_at   = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_WRITE" " %x", addr);
-
    /* UDP packets must fit into common MTU sizes minus IP+UDP packet header size.
     * 1024 hex chars should fit comfortably in a common 1500 MTU network. */
    if (nbytes > 512)
    {
-      nbytes = 512;
       RARCH_WARN("[CORE_MEM_WRITE] size must be at most 512 bytes\n");
-      err = -2;
+      err = 4;
    }
 
-   reply_at += snprintf(reply_at, 5, " %3x", nbytes);
+   if (err == 0)
+   {
+      /* find the mapped memory by address: */
+      err = core_mem_find(
+         /* input */
+         addr,
+         /* output */
+         &desc,
+         &data,
+         &offs
+      );
+   }
 
-   if (err != 0)
-      goto error;
-
-   /* find the mapped memory by address: */
-   err = core_mem_find(
-      /* input */
-      addr,
-      /* output */
-      &desc,
-      &data,
-      &offs
-   );
-
-   if (err == -1)
+   if (err == 1)
    {
       RARCH_WARN("[CORE_MEM_WRITE] no memory map descriptors found\n");
-      goto error;
    }
-
-   if (err == -3)
+   else if (err == 2)
    {
       RARCH_WARN("[CORE_MEM_WRITE] address %08x did not match any memory map descriptors\n", addr);
-      goto error;
    }
-
-   if (err == -4)
+   else if (err == 3)
    {
       RARCH_WARN("[CORE_MEM_WRITE] address %08x matched a descriptor but pointer was NULL\n", addr);
-      goto error;
    }
 
-   /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
-    * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
-   for (i = 0; i < nbytes; i++, offs++, t += 2)
+   if (err == 0)
    {
-      unsigned int b;
-
-      while (offs >= desc->core.len)
+      /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
+       * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
+      for (i = 0; i < nbytes; i++, t += 2)
       {
-         offs &= ~mmap_highest_bit(offs);
+         unsigned int b;
+
+         if (*t == 0 || *t == '\n')
+            break;
+
+         sscanf(t, "%02x", &b);
+         bytes[i] = b;
       }
-
-      if (*t == 0)
-         break;
-
-      sscanf(t, "%02x", &b);
-
-      data[offs] = b;
+      if (i < nbytes)
+      {
+         RARCH_WARN("[CORE_MEM_WRITE] unexpected end of input; command has %x bytes but expected %x\n", i, nbytes);
+         err = 5;
+      }
    }
 
-   err = 0;
+   if (err == 0)
+   {
+      for (i = 0; i < nbytes; i++, offs++)
+      {
+         while (offs >= desc->core.len)
+         {
+            offs &= ~mmap_highest_bit(offs);
+         }
 
-error:
-   reply_at += snprintf(reply_at, 5, " %d\n", err);
+         data[offs] = bytes[i];
+      }
+   }
+
+   alloc_size = 40;
+   reply      = (char*)malloc(alloc_size);
+   reply[0]   = '\0';
+
+   reply_at = reply + snprintf(reply, alloc_size - 1, "CORE_MEM_WRITE" " %x %x %d\n", addr, nbytes, err);
    len = reply_at - reply;
 
-final:
    /*RARCH_LOG("[CORE_MEM_WRITE] len=%d of %d; strlen=%d\n", len, alloc_size, strlen(reply));*/
    command_reply(p_rarch, reply, len);
    free(reply);
