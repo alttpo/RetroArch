@@ -10112,6 +10112,7 @@ static bool command_write_ram(const char *arg)
 
 static int core_mem_find(
   /* input */
+  rarch_memory_map_t *mmaps,
   unsigned addr,
   /* output */
   const rarch_memory_descriptor_t **p_desc,
@@ -10119,22 +10120,20 @@ static int core_mem_find(
   size_t   *p_offs
 )
 {
-   rarch_system_info_t  *system;
    const rarch_memory_descriptor_t *desc;
    const rarch_memory_descriptor_t *end;
 
    uint8_t *data = NULL;
    size_t   offs = 0;
 
-   system = runloop_get_system_info();
-   /*RARCH_LOG("[CORE_MEM_READ] num_descriptors = %d\n", system->mmaps.num_descriptors);*/
-   if (system->mmaps.num_descriptors == 0)
+   /*RARCH_LOG("[CORE_MEM_READ] num_descriptors = %d\n", mmaps->num_descriptors);*/
+   if (mmaps->num_descriptors == 0)
    {
       return 1;
    }
 
-   desc = system->mmaps.descriptors;
-   end  = desc + system->mmaps.num_descriptors;
+   desc = mmaps->descriptors;
+   end  = desc + mmaps->num_descriptors;
 
    for (; desc < end; desc++)
    {
@@ -10240,8 +10239,11 @@ static bool command_core_mem_read(const char *arg)
    /* find the mapped memory by address: */
    if (err == 0)
    {
+      rarch_system_info_t  *system;
+      system = runloop_get_system_info();
       err = core_mem_find(
          /* input */
+         &system->mmaps,
          addr,
          /* output */
          &desc,
@@ -10336,11 +10338,14 @@ static bool command_core_mem_write(const char *arg)
       err = 4;
    }
 
+   /* find the mapped memory by address: */
    if (err == 0)
    {
-      /* find the mapped memory by address: */
+      rarch_system_info_t  *system;
+      system = runloop_get_system_info();
       err = core_mem_find(
          /* input */
+         &system->mmaps,
          addr,
          /* output */
          &desc,
