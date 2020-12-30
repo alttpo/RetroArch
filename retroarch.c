@@ -10180,6 +10180,8 @@ static int core_mem_find(
    return 0;
 }
 
+
+
 static bool command_core_mem_read(const char *arg)
 {
    unsigned i;
@@ -10294,7 +10296,7 @@ static bool command_core_mem_read(const char *arg)
    return true;
 }
 
-static bool command_core_mem_write(const char *arg)
+static bool command_core_mem_write(const char *args)
 {
    unsigned i;
    int err = 0;
@@ -10312,7 +10314,11 @@ static bool command_core_mem_write(const char *arg)
 
    const rarch_memory_descriptor_t *desc = NULL;
 
+   const char *arg = args;
    const char *t = arg;
+
+   size_t      arglen = strlen(args);
+   const char *argend = args + arglen;
 
    addr = strtoul(t, (char**)&t, 16);
    if (t == arg)
@@ -10369,27 +10375,76 @@ static bool command_core_mem_write(const char *arg)
 
    if (err == 0)
    {
-      /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
-       * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
-      for (i = 0; i < nbytes; i++, t += 2)
+      i = 0;
+      while (i < nbytes)
       {
-         unsigned int b;
+         uint8_t c = 0, b = 0;
 
-         if (*t == 0 || *t == '\n')
+         /* skip whitespace if any */
+         while ((t < argend) && (*t == ' ' || *t == '\t'))
+         {
+            t++;
+         }
+
+         if (t >= argend)
             break;
 
-         sscanf(t, "%02x", &b);
+         /* high 4 bits */
+         c = *t;
+         if (c >= '0' && c <= '9')
+            b = (c - '0') << 4;
+         else if (c >= 'A' && c <= 'F')
+            b = (c - 'A' + 10) << 4;
+         else if (c >= 'a' && c <= 'f')
+            b = (c - 'a' + 10) << 4;
+         else
+         {
+            err = 6;
+            RARCH_WARN("[CORE_MEM_WRITE] invalid hex character at position %d\n", t - arg);
+            break;
+         }
+
+         t++;
+         if (t >= argend)
+         {
+            err = 7;
+            RARCH_WARN("[CORE_MEM_WRITE] incomplete hex byte at position %d\n", t - arg);
+            break;
+         }
+
+         /* low 4 bits */
+         c = *t;
+         if (c >= '0' && c <= '9')
+            b |= (c - '0');
+         else if (c >= 'A' && c <= 'F')
+            b |= (c - 'A' + 10);
+         else if (c >= 'a' && c <= 'f')
+            b |= (c - 'a' + 10);
+         else
+         {
+            err = 6;
+            RARCH_WARN("[CORE_MEM_WRITE] invalid hex character at position %d\n", t - arg);
+            break;
+         }
+         t++;
+
+         /* acknowledge byte */
          bytes[i] = b;
+         i++;
       }
-      if (i < nbytes)
+
+      if (i != nbytes)
       {
          RARCH_WARN("[CORE_MEM_WRITE] unexpected end of input; command has %x bytes but expected %x\n", i, nbytes);
-         err = 5;
+         if (err == 0)
+            err = 5;
       }
    }
 
    if (err == 0)
    {
+      /* note that this does not respect the linear emulated address space if the requested chunk crosses a mapping
+       * boundary. in that case, the data will repeat back to the start of the physical memory being mapped in. */
       for (i = 0; i < nbytes; i++, offs++)
       {
          while (offs >= desc->core.len)
